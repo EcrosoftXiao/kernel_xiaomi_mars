@@ -3203,6 +3203,24 @@ static ssize_t fts_fod_status_store(struct device *dev, struct device_attribute 
 }
 #endif
 
+#ifdef GESTURE_MODE
+static ssize_t fts_double_tap_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    return sprintf(buf, "%d\n", fts_info->gesture_enabled);
+}
+
+static ssize_t fts_double_tap_store(struct device *dev, struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct fts_ts_info *info = dev_get_drvdata(dev);
+
+	sscanf(buf, "%u", &info->gesture_enabled);
+	schedule_work(&fts_info->switch_mode_work);
+
+	return count;
+}
+#endif
+
 static DEVICE_ATTR(ms_strength, (S_IRUGO), fts_strength_frame_show, NULL);
 static DEVICE_ATTR(fwupdate, (S_IRUGO | S_IWUSR | S_IWGRP), fts_fwupdate_show,
 		fts_fwupdate_store);
@@ -3261,6 +3279,11 @@ static DEVICE_ATTR(gesture_coordinates, (S_IRUGO | S_IWUSR | S_IWGRP),
 #ifdef FTS_FOD_AREA_REPORT
 static DEVICE_ATTR(fod_status, (S_IRUGO | S_IWUSR | S_IWGRP),
 		   fts_fod_status_show, fts_fod_status_store);
+#endif
+
+#ifdef GESTURE_MODE
+static DEVICE_ATTR(double_tap, (S_IRUGO | S_IWUSR | S_IWGRP),
+		   fts_double_tap_show, fts_double_tap_store);
 #endif
 
 static DEVICE_ATTR(doze_time, (S_IRUGO | S_IWUSR | S_IWGRP),
@@ -7911,6 +7934,13 @@ static int fts_probe(struct spi_device *client)
 	if (error)
 		logError(1, "%s ERROR: Failed to create fod_status sysfs group!\n", tag);
 #endif
+
+#ifdef GESTURE_MODE
+	error = sysfs_create_file(&info->fts_touch_dev->kobj, &dev_attr_double_tap.attr);
+	if (error)
+		logError(1, "%s ERROR: Failed to create double_tap sysfs group!\n", tag);
+#endif
+
 	error =
 	    sysfs_create_file(&info->fts_touch_dev->kobj,
 			      &dev_attr_ellipse_data.attr);
