@@ -23,8 +23,8 @@
 		qcom,mdss-dsi-dma-trigger = "trigger_sw";
 		qcom,mdss-dsi-mdp-trigger = "none";
 		qcom,mdss-dsi-reset-sequence =  <1 11>, <0 1>, <1 11>;
-		qcom,mdss-pan-physical-width-dimension = <68>;
-		qcom,mdss-pan-physical-height-dimension = <152>;
+		qcom,mdss-pan-physical-width-dimension = <683>;
+		qcom,mdss-pan-physical-height-dimension = <1517>;
 		qcom,mdss-dsi-te-pin-select = <1>;
 		qcom,mdss-dsi-wr-mem-start = <0x2c>;
 		qcom,mdss-dsi-wr-mem-continue = <0x3c>;
@@ -151,8 +151,7 @@
 				qcom,mdss-dsi-nolp-command = [
 					15 01 00 00 00 00 02 65 00
 					05 01 00 00 00 00 01 38
-					15 01 00 00 19 00 02 2F 02
-					39 01 00 00 00 00 03 51 03 FF];
+					15 01 00 00 00 00 02 2F 02];
 				qcom,mdss-dsi-nolp-command-state = "dsi_lp_mode";
 
 				qcom,compression-mode = "dsc";
@@ -273,8 +272,7 @@
 				qcom,mdss-dsi-nolp-command = [
 					15 01 00 00 00 00 02 65 00
 					05 01 00 00 00 00 01 38
-					15 01 00 00 19 00 02 2F 01
-					39 01 00 00 00 00 03 51 03 FF];
+					15 01 00 00 00 00 02 2F 01];
 				qcom,mdss-dsi-nolp-command-state = "dsi_lp_mode";
 
 				qcom,compression-mode = "dsc";
@@ -298,17 +296,11 @@
 	mi,hbm-on-51-index = <1>;
 	mi,hbm-bl-min-level = <1>;
 	mi,hbm-bl-max-level = <2047>;
-	mi,mdss-dsi-panel-dc-type = <0>;
 	mi,panel-on-dimming-delay = <120>;
 	mi,fp-display-on-optimize-flag;
-	mi,max-brightness-clone = <2047>;
-	mi,step-hbm-flag;
 
 	/* IRQF_ONESHOT | IRQF_TRIGGER_FALLING */
 	mi,esd-err-irq-gpio = <&tlmm 80 0x2002>;
-
-	mi,mdss-dsi-panel-bl-nolp-enable;
-	mi,mdss-dsi-panel-bl-nolp-index = <3>;
 
 	qcom,esd-check-enabled;
 	qcom,esd-aod-check-enabled;

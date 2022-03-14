@@ -1251,12 +1251,6 @@
 					39 01 00 00 00 00 03 F0 A5 A5
 			];
 			mi,mdss-dsi-spr-2d-rendering-command-state = "dsi_lp_mode";
-
-			mi,mdss-dsi-color-invert-on-command = [05 01 00 00 00 00 01 21];
-			mi,mdss-dsi-color-invert-on-command-state = "dsi_lp_mode";
-
-			mi,mdss-dsi-color-invert-off-command = [05 01 00 00 00 00 01 20];
-			mi,mdss-dsi-color-invert-off-command-state = "dsi_lp_mode";
 		};
 
 		timing@1{
@@ -1905,12 +1899,6 @@
 					39 01 00 00 00 00 03 F0 A5 A5
 			];
 			mi,mdss-dsi-spr-2d-rendering-command-state = "dsi_lp_mode";
-
-			mi,mdss-dsi-color-invert-on-command = [05 01 00 00 00 00 01 21];
-			mi,mdss-dsi-color-invert-on-command-state = "dsi_lp_mode";
-
-			mi,mdss-dsi-color-invert-off-command = [05 01 00 00 00 00 01 20];
-			mi,mdss-dsi-color-invert-off-command-state = "dsi_lp_mode";
 		};
 
 		timing@2{
@@ -2590,12 +2578,6 @@
 					39 01 00 00 00 00 03 F0 A5 A5
 			];
 			mi,mdss-dsi-spr-2d-rendering-command-state = "dsi_lp_mode";
-
-			mi,mdss-dsi-color-invert-on-command = [05 01 00 00 00 00 01 21];
-			mi,mdss-dsi-color-invert-on-command-state = "dsi_lp_mode";
-
-			mi,mdss-dsi-color-invert-off-command = [05 01 00 00 00 00 01 20];
-			mi,mdss-dsi-color-invert-off-command-state = "dsi_lp_mode";
 		};
 	};
 };

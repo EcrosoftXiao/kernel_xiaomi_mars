@@ -9,17 +9,6 @@ And public attribution of xiaomi platforms(like venus and so and)
 #include "camera/mars-sm8350-camera-sensor.dtsi"
 
 &soc {
-	gpio_keys {
-		hall_key {
-			label = "hall_key";
-			gpios = <&tlmm 80 GPIO_ACTIVE_LOW>;
-			linux,input-type = <5>;
-			linux,code = <0>;
-			gpio-key,wakeup;
-			debounce-interval = <15>;
-		};
-	};
-
 	fingerprint_goodix {
 		compatible = "goodix,fingerprint";
 		l11c_vdd-supply = <&L11C>;
@@ -395,23 +384,6 @@ And public attribution of xiaomi platforms(like venus and so and)
 	vddd-supply = <&display_prim_vddd>;
 };
 
-&sde_dp {
-	status = "disabled";
-};
-
-&qcom_msmhdcp {
-	status = "disabled";
-};
-
-&sde_dsi1 {
-	status = "disabled";
-};
-
-&mdss_mdp {
-	connectors = <&smmu_sde_unsec &smmu_sde_sec &sde_wb &sde_dsi
-		&sde_rscc>;
-};
-
 &pm8350b_gpios {
 	pm8350b_wl_chg_therm {
 		pm8350b_wl_chg_therm_default: pm8350b_wl_chg_therm_default {
@@ -435,7 +407,7 @@ And public attribution of xiaomi platforms(like venus and so and)
 	 0x0e 0x70	/* override_x1 */
 	 0x04 0x74>;	/* override x2 */
 	qcom,param-override-seq =
-	<0x27 0x6c	/* override_x0 */
+	<0x47 0x6c	/* override_x0 */
 	 0x0b 0x70	/* override_x1 */
 	 0x08 0x74>;	/* override x2 */
 };

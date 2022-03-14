@@ -66,6 +66,8 @@
 	pmx65_die_temp {
 		reg = <PMX65_ADC7_DIE_TEMP>;
 		label = "pmx65_die_temp";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
 		qcom,pre-scaling = <1 1>;
 	};
 };
