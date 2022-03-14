@@ -70,12 +70,6 @@
 		board-sensor = "VIRTUAL-SENSOR";
 	};
 
-	xiaomi_touch {
-		compatible = "xiaomi-touch";
-		status = "ok";
-		touch,name = "xiaomi-touch";
-	};
-
 	touch_avddsource_vreg: touch_avddsource_vreg {
 		compatible = "regulator-fixed";
 		regulator-name = "touch_avddsource_vreg";

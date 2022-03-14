@@ -19,11 +19,6 @@ And public attribution of xiaomi platforms(like venus and so and)
 			debounce-interval = <15>;
 		};
 	};
-	xiaomi_touch {
-		compatible = "xiaomi-touch";
-		status = "ok";
-		touch,name = "xiaomi-touch";
-	};
 
 	fingerprint_goodix {
 		compatible = "goodix,fingerprint";
