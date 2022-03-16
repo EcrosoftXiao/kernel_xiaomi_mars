@@ -62,8 +62,8 @@
 #define AW8697_MAX_BST_VO 0x1f
 
 #define OSC_CALIBRATION_T_LENGTH 5100000
-#define PM_QOS_VALUE_VB 400
-struct pm_qos_request pm_qos_req_vb;
+#define CPU_LATENCY_QOC_VALUE (0)
+static struct pm_qos_request pm_qos_req;
 /******************************************************
  *
  * variable
@@ -1177,6 +1177,7 @@ static int aw8697_haptic_read_f0(struct aw8697 *aw8697)
 	f0_reg |= (reg_val << 0);
 	if (!f0_reg) {
 		pr_info("%s: not get f0_reg value is 0!\n", __func__);
+		aw8697->f0 = 0;
 		aw8697->f0_cali_status = false;
 		return 0;
 	}
@@ -1321,8 +1322,9 @@ static int aw8697_haptic_rtp_init(struct aw8697 *aw8697)
 	unsigned int buf_len = 0;
 	unsigned int period_size = aw8697->ram.base_addr >> 2 ;
 
-	pm_qos_add_request(&pm_qos_req_vb, PM_QOS_CPU_DMA_LATENCY, PM_QOS_VALUE_VB);
+	pm_qos_add_request(&pm_qos_req, PM_QOS_CPU_DMA_LATENCY, CPU_LATENCY_QOC_VALUE);
 	aw8697->rtp_cnt = 0;
+	mutex_lock(&aw8697->rtp_lock);
 	while ((!aw8697_haptic_rtp_get_fifo_afi(aw8697)) &&
 	       (aw8697->play_mode == AW8697_HAPTIC_RTP_MODE) &&
 	       !atomic_read(&aw8697->exit_in_rtp_loop)) {
@@ -1339,7 +1341,8 @@ static int aw8697_haptic_rtp_init(struct aw8697 *aw8697)
 			if (aw8697->rtp_cnt == aw8697_rtp->len) {
 				aw8697->rtp_cnt = 0;
 				aw8697_haptic_set_rtp_aei(aw8697, false);
-				pm_qos_remove_request(&pm_qos_req_vb);
+				mutex_unlock(&aw8697->rtp_lock);
+				pm_qos_remove_request(&pm_qos_req);
 				return 0;
 			}
 		} else {
@@ -1349,7 +1352,8 @@ static int aw8697_haptic_rtp_init(struct aw8697 *aw8697)
 				pr_info("%s: custom rtp update complete\n", __func__);
 				aw8697->rtp_cnt = 0;
 				aw8697_haptic_set_rtp_aei(aw8697, false);
-				pm_qos_remove_request(&pm_qos_req_vb);
+				mutex_unlock(&aw8697->rtp_lock);
+				pm_qos_remove_request(&pm_qos_req);
 				return 0;
 			}
 		}
@@ -1358,7 +1362,8 @@ static int aw8697_haptic_rtp_init(struct aw8697 *aw8697)
 		aw8697_haptic_set_rtp_aei(aw8697, true);
 	}
 	pr_info("%s: exit\n", __func__);
-	pm_qos_remove_request(&pm_qos_req_vb);
+	mutex_unlock(&aw8697->rtp_lock);
+	pm_qos_remove_request(&pm_qos_req);
 	return 0;
 }
 
@@ -1574,7 +1579,7 @@ static int aw8697_rtp_osc_calibration(struct aw8697 *aw8697)
 	disable_irq(gpio_to_irq(aw8697->irq_gpio));
 	/* haptic start */
 	aw8697_haptic_start(aw8697);
-	pm_qos_add_request(&pm_qos_req_vb, PM_QOS_CPU_DMA_LATENCY, PM_QOS_VALUE_VB);
+	pm_qos_add_request(&pm_qos_req, PM_QOS_CPU_DMA_LATENCY, CPU_LATENCY_QOC_VALUE);
 	while (1) {
 		if (!aw8697_haptic_rtp_get_fifo_afi(aw8697)) {
 			mutex_lock(&aw8697->rtp_lock);
@@ -1607,7 +1612,7 @@ static int aw8697_rtp_osc_calibration(struct aw8697 *aw8697)
 			break;
 		}
 	}
-	pm_qos_remove_request(&pm_qos_req_vb);
+	pm_qos_remove_request(&pm_qos_req);
 	enable_irq(gpio_to_irq(aw8697->irq_gpio));
 
 	aw8697->osc_cali_flag = 0;
@@ -1914,6 +1919,16 @@ static int aw8697_haptic_cont(struct aw8697 *aw8697)
 }
 
 #ifndef USE_CONT_F0_CALI
+static int aw8697_get_glb_state(struct aw8697 *aw8697)
+{
+	unsigned char glb_state_val = 0;
+
+	aw8697_i2c_read(aw8697, AW8697_REG_GLB_STATE, &glb_state_val);
+	return glb_state_val;
+}
+#endif
+
+#ifndef USE_CONT_F0_CALI
 /*****************************************************
  *
  * haptic f0 cali
@@ -1922,7 +1937,7 @@ static int aw8697_haptic_cont(struct aw8697 *aw8697)
 static int aw8697_haptic_get_f0(struct aw8697 *aw8697)
 {
 	int ret = 0;
-	/*unsigned char i = 0; */
+	unsigned char i = 0;
 	unsigned char reg_val = 0;
 	unsigned char f0_pre_num = 0;
 	unsigned char f0_wait_num = 0;
@@ -1930,7 +1945,7 @@ static int aw8697_haptic_get_f0(struct aw8697 *aw8697)
 	unsigned char f0_trace_num = 0;
 	unsigned int t_f0_ms = 0;
 	unsigned int t_f0_trace_ms = 0;
-	/*unsigned int f0_cali_cnt = 50; */
+	unsigned int f0_cali_cnt = 50;
 
 	pr_info("%s enter\n", __func__);
 
@@ -1938,6 +1953,7 @@ static int aw8697_haptic_get_f0(struct aw8697 *aw8697)
 
 	/* f0 calibrate work mode */
 	aw8697_haptic_stop(aw8697);
+	aw8697_i2c_write(aw8697, AW8697_REG_TRIM_LRA, 0x00);
 	aw8697_haptic_play_mode(aw8697, AW8697_HAPTIC_CONT_MODE);
 
 	aw8697_i2c_write_bits(aw8697, AW8697_REG_CONT_CTRL,
@@ -1993,31 +2009,27 @@ static int aw8697_haptic_get_f0(struct aw8697 *aw8697)
 	t_f0_trace_ms =
 	    t_f0_ms * (f0_pre_num + f0_wait_num +
 		       (f0_trace_num + f0_wait_num) * (f0_repeat_num - 1)) + 50;
-	msleep(t_f0_trace_ms);
+	usleep_range(t_f0_trace_ms * 1000, t_f0_trace_ms * 1000 + 500);
 
-	#if 0
+
 	for (i = 0; i < f0_cali_cnt; i++) {
-		mdelay(200);
-		ret = aw8697_i2c_read(aw8697, AW8697_REG_SYSINT, &reg_val);
+		reg_val = aw8697_get_glb_state(aw8697);
 		/* f0 calibrate done */
-		if (reg_val & 0x01) {
+		if ((reg_val & 0x0f) == 0x00) {
 			aw8697_haptic_read_f0(aw8697);
 			aw8697_haptic_read_beme(aw8697);
 			break;
 		}
-		msleep(200);
-		pr_info("%s f0 cali sleep 10ms\n", __func__);
+		usleep_range(10000, 10500);
+		pr_info("%s: f0 cali sleep 10ms\n", __func__);
 	}
 
-	if (i == f0_cali_cnt) {
+	if ((i == f0_cali_cnt) ||(aw8697->f0 == 0)){
 		ret = -1;
 	} else {
 		ret = 0;
 	}
-	#endif
 
-	aw8697_haptic_read_f0(aw8697);
-	aw8697_haptic_read_beme(aw8697);
 	/* restore default config */
 	aw8697_i2c_write_bits(aw8697, AW8697_REG_CONT_CTRL,
 			      AW8697_BIT_CONT_CTRL_EN_CLOSE_MASK,
@@ -2147,13 +2159,25 @@ static int aw8697_haptic_f0_calibration(struct aw8697 *aw8697)
 	} else {
 		/* max and min limit */
 		f0_limit = aw8697->f0;
+		if(((f0_limit*100) > (1700*107))&& ((f0_limit*100) < (1700*109))){//107~109% max 181
+			aw8697->f0_calib_data = 0x1f;
+			printk("%s aw8697->f0_calib_data = %d\n",__func__, aw8697->f0_calib_data);
+			aw8697_i2c_write(aw8697, AW8697_REG_TRIM_LRA, aw8697->f0_calib_data);
+			return 0;
+		} else if(((f0_limit*100) > (1700 * 91)) && ((f0_limit*100) < (1700*93))){//91~93% min 161
+			aw8697->f0_calib_data = 0x20;
+			printk("%s aw8697->f0_calib_data = %d\n",__func__, aw8697->f0_calib_data);
+			aw8697_i2c_write(aw8697, AW8697_REG_TRIM_LRA, aw8697->f0_calib_data);
+			return 0;
+		}
+
 		if (aw8697->f0 * 100 <
-		    aw8697->info.f0_pre * (100 - aw8697->info.f0_cali_percen)) {
-			f0_limit = aw8697->info.f0_pre;
+			aw8697->info.f0_pre * (100 - aw8697->info.f0_cali_percen)) {
+			    f0_limit = aw8697->info.f0_pre;
 		}
 		if (aw8697->f0 * 100 >
-		    aw8697->info.f0_pre * (100 + aw8697->info.f0_cali_percen)) {
-			f0_limit = aw8697->info.f0_pre;
+			aw8697->info.f0_pre * (100 + aw8697->info.f0_cali_percen)) {
+			    f0_limit = aw8697->info.f0_pre;
 		}
 
 		/* calculate cali step */
@@ -2577,6 +2601,7 @@ static int aw8697_vibrator_init(struct aw8697 *aw8697)
 	INIT_WORK(&aw8697->rtp_work, aw8697_rtp_work_routine);
 
 	mutex_init(&aw8697->lock);
+	mutex_init(&aw8697->rtp_lock);
 	atomic_set(&aw8697->is_in_rtp_loop, 0);
 	atomic_set(&aw8697->exit_in_rtp_loop, 0);
 	atomic_set(&aw8697->is_in_write_loop, 0);
@@ -3100,15 +3125,15 @@ static int aw8697_haptics_upload_effect(struct input_dev *dev,
 			aw8697->activate_mode = AW8697_HAPTIC_ACTIVATE_RTP_MODE;
 			pr_debug("%s: aw8697->effect_id=%d , aw8697->activate_mode = %d\n",
 				__func__, aw8697->effect_id, aw8697->activate_mode);
-			data[1] = aw8697->info.rtp_time[aw8697->effect_id]/1000; /*second data*/
-			data[2] = aw8697->info.rtp_time[aw8697->effect_id];  /*millisecond data*/
+			data[1] = 30; /*second data*/
+			data[2] = 0;  /*millisecond data*/
 		}
 		if (aw8697->effect_id == CUSTOME_WAVE_ID) {
 			aw8697->activate_mode = AW8697_HAPTIC_ACTIVATE_RTP_MODE;
 			pr_debug("%s: aw8697->effect_id=%d , aw8697->activate_mode = %d\n",
 				__func__, aw8697->effect_id, aw8697->activate_mode);
-			data[1] = aw8697->info.rtp_time[aw8697->effect_id]/1000; /*second data*/
-			data[2] = aw8697->info.rtp_time[aw8697->effect_id];  /*millisecond data*/
+			data[1] = 30; /*second data*/
+			data[2] = 0;  /*millisecond data*/
 			aw8697->is_custom_wave = 1;
 			rb_init();
 		}
@@ -3855,10 +3880,16 @@ static ssize_t aw8697_f0_show(struct device *dev, struct device_attribute *attr,
 {
 	struct aw8697 *aw8697 = dev_get_drvdata(dev);
 	ssize_t len = 0;
+	unsigned int f0_cnt_time = 0;
 
 	mutex_lock(&aw8697->lock);
 	aw8697->f0_cali_flag = AW8697_HAPTIC_LRA_F0;
 	aw8697_haptic_get_f0(aw8697);
+        f0_cnt_time = 1;
+	if((f0_cnt_time == 1) && (aw8697->f0 == 0)){
+		aw8697_haptic_get_f0(aw8697);
+		f0_cnt_time = 0;
+	}
 	mutex_unlock(&aw8697->lock);
 	len +=
 	    //snprintf(buf + len, PAGE_SIZE - len, "aw8697 lra f0 = %d\n",
