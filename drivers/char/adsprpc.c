@@ -64,7 +64,6 @@
 
 #define FASTRPC_ENOSUCH 39
 #define DEBUGFS_SIZE 3072
-#define UL_SIZE 25
 #define PID_SIZE 10
 
 #define AUDIO_PDR_ADSP_DTSI_PROPERTY_NAME        "qcom,fastrpc-adsp-audio-pdr"
@@ -568,11 +567,13 @@ struct fastrpc_mmap {
 	uintptr_t raddr;
 	int uncached;
 	int secure;
-	bool is_persistent;                     //the map is persistenet across sessions
-	int frpc_md_index;                      //Minidump unique index
+	bool is_persistent;		/* Indicates whether map is persistent */
+	int frpc_md_index;		/* Minidump unique index */
 	uintptr_t attr;
+	bool in_use;			/* Indicates if persistent map is in use*/
 	struct timespec64 map_start_time;
 	struct timespec64 map_end_time;
+	bool is_filemap; /*flag to indicate map used in process init*/
 };
 
 enum fastrpc_perfkeys {
@@ -645,6 +646,8 @@ struct fastrpc_file {
 	struct completion work;
 	/* Flag to indicate ram dump collection status*/
 	bool is_ramdump_pend;
+	/* Flag to indicate dynamic process creation status*/
+	bool in_process_create;
 };
 
 static struct fastrpc_apps gfa;
@@ -1197,9 +1200,10 @@ static int fastrpc_mmap_remove(struct fastrpc_file *fl, int fd, uintptr_t va,
 
 	spin_lock(&me->hlock);
 	hlist_for_each_entry_safe(map, n, &me->maps, hn) {
-		if ((fd < 0 || map->fd == fd) && map->raddr == va &&
+		if (map->refs == 1 && map->raddr == va &&
 			map->raddr + map->len == va + len &&
-			map->refs == 1 && !map->is_persistent) {
+			/*Remove map if not used in process initialization*/
+			!map->is_filemap) {
 			match = map;
 			hlist_del_init(&map->hn);
 			break;
@@ -1211,9 +1215,10 @@ static int fastrpc_mmap_remove(struct fastrpc_file *fl, int fd, uintptr_t va,
 		return 0;
 	}
 	hlist_for_each_entry_safe(map, n, &fl->maps, hn) {
-		if ((fd < 0 || map->fd == fd) && map->raddr == va &&
+		if (map->refs == 1 && map->raddr == va &&
 			map->raddr + map->len == va + len &&
-			map->refs == 1) {
+			/*Remove map if not used in process initialization*/
+			!map->is_filemap) {
 			match = map;
 			hlist_del_init(&map->hn);
 			break;
@@ -1259,6 +1264,11 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 				"multiple references for remote heap size %zu va 0x%lx ref count is %d\n",
 				map->size, map->va, map->refs);
 			return;
+		}
+		if (map->is_persistent && map->in_use) {
+			spin_lock(&me->hlock);
+			map->in_use = false;
+			spin_unlock(&me->hlock);
 		}
 	} else {
 		map->refs--;
@@ -1333,6 +1343,27 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 static int fastrpc_session_alloc(struct fastrpc_channel_ctx *chan, int secure,
 					struct fastrpc_session_ctx **session);
 
+static inline bool fastrpc_get_persistent_map(size_t len, struct fastrpc_mmap **pers_map)
+{
+	struct fastrpc_apps *me = &gfa;
+	struct fastrpc_mmap *map = NULL;
+	struct hlist_node *n = NULL;
+	bool found = false;
+
+	spin_lock(&me->hlock);
+	hlist_for_each_entry_safe(map, n, &me->maps, hn) {
+		if (len == map->len &&
+			map->is_persistent && !map->in_use) {
+			*pers_map = map;
+			map->in_use = true;
+			found = true;
+			break;
+		}
+	}
+	spin_unlock(&me->hlock);
+	return found;
+}
+
 static int fastrpc_mmap_create(struct fastrpc_file *fl, int fd,
 	unsigned int attr, uintptr_t va, size_t len, int mflags,
 	struct fastrpc_mmap **ppmap)
@@ -1371,6 +1402,7 @@ static int fastrpc_mmap_create(struct fastrpc_file *fl, int fd,
 	map->fd = fd;
 	map->attr = attr;
 	map->frpc_md_index = -1;
+	map->is_filemap = false;
 	ktime_get_real_ts64(&map->map_start_time);
 	if (mflags == ADSP_MMAP_HEAP_ADDR ||
 				mflags == ADSP_MMAP_REMOTE_HEAP_ADDR) {
@@ -2254,7 +2286,13 @@ static void fastrpc_ramdump_collection(int cid)
 
 	spin_lock(&me->hlock);
 	hlist_for_each_entry_safe(fl, n, &me->drivers, hn) {
-		if (fl->cid == cid && fl->init_mem) {
+	/*
+	 * On SSR call back, dumps collected only when process is initialized,
+	 * And, process is not cleaned on DSP to avoid UAF for init_mem.
+	 */
+		if (fl->cid == cid && fl->init_mem &&
+			fl->file_close < FASTRPC_PROCESS_DSP_EXIT_COMPLETE &&
+			fl->dsp_proc_init) {
 			hlist_add_head(&fl->init_mem->hn_init, &chan->initmems);
 			fl->is_ramdump_pend = true;
 		}
@@ -3282,7 +3320,7 @@ static int fastrpc_wait_on_async_queue(
 read_async_job:
 	interrupted = wait_event_interruptible(fl->async_wait_queue,
 				atomic_read(&fl->async_queue_job_count));
-	if (!fl || fl->file_close == FASTRPC_PROCESS_EXIT_START) {
+	if (!fl || fl->file_close >= FASTRPC_PROCESS_EXIT_START) {
 		err = -EBADF;
 		goto bail;
 	}
@@ -3626,6 +3664,15 @@ static int fastrpc_init_create_dynamic_process(struct fastrpc_file *fl,
 		int siglen;
 	} inbuf;
 
+	spin_lock(&fl->hlock);
+	if (fl->in_process_create) {
+		err = -EALREADY;
+		ADSPRPC_ERR("Already in create dynamic process\n");
+		spin_unlock(&fl->hlock);
+		return err;
+	}
+	fl->in_process_create = true;
+	spin_unlock(&fl->hlock);
 	inbuf.pgid = fl->tgid;
 	inbuf.namelen = strlen(current->comm) + 1;
 	inbuf.filelen = init->filelen;
@@ -3640,6 +3687,8 @@ static int fastrpc_init_create_dynamic_process(struct fastrpc_file *fl,
 		mutex_lock(&fl->map_mutex);
 		err = fastrpc_mmap_create(fl, init->filefd, 0,
 			init->file, init->filelen, mflags, &file);
+		if (file)
+			file->is_filemap = true;
 		mutex_unlock(&fl->map_mutex);
 		if (err)
 			goto bail;
@@ -3792,6 +3841,9 @@ bail:
 			locked = 0;
 		}
 	}
+	spin_lock(&fl->hlock);
+	fl->in_process_create = false;
+	spin_unlock(&fl->hlock);
 	return err;
 }
 
@@ -3854,12 +3906,19 @@ static int fastrpc_init_create_static_process(struct fastrpc_file *fl,
 
 	if (!me->staticpd_flags && !me->legacy_remote_heap) {
 		inbuf.pageslen = 1;
-		mutex_lock(&fl->map_mutex);
-		err = fastrpc_mmap_create(fl, -1, 0, init->mem,
-			 init->memlen, ADSP_MMAP_REMOTE_HEAP_ADDR, &mem);
-		mutex_unlock(&fl->map_mutex);
-		if (err)
-			goto bail;
+		if (!fastrpc_get_persistent_map(init->memlen, &mem)) {
+			mutex_lock(&fl->map_mutex);
+			err = fastrpc_mmap_create(fl, -1, 0, init->mem,
+				 init->memlen, ADSP_MMAP_REMOTE_HEAP_ADDR, &mem);
+			if (mem)
+				mem->is_filemap = true;
+			mutex_unlock(&fl->map_mutex);
+			if (err)
+				goto bail;
+			spin_lock(&me->hlock);
+			mem->in_use = true;
+			spin_unlock(&me->hlock);
+		}
 		phys = mem->phys;
 		size = mem->size;
 		/*
@@ -3930,9 +3989,9 @@ bail:
 					"rh hyp unassign failed with %d for phys 0x%llx of size %zu\n",
 					hyp_err, phys, size);
 		}
-	mutex_lock(&fl->map_mutex);
-	fastrpc_mmap_free(mem, 0);
-	mutex_unlock(&fl->map_mutex);
+		mutex_lock(&fl->map_mutex);
+		fastrpc_mmap_free(mem, 0);
+		mutex_unlock(&fl->map_mutex);
 	}
 	return err;
 }
@@ -4182,9 +4241,9 @@ static int fastrpc_release_current_dsp_process(struct fastrpc_file *fl)
 	ioctl.perf_kernel = NULL;
 	ioctl.perf_dsp = NULL;
 	ioctl.job = NULL;
-	spin_lock(&fl->hlock);
+	spin_lock(&fl->apps->hlock);
 	fl->file_close = FASTRPC_PROCESS_DSP_EXIT_INIT;
-	spin_unlock(&fl->hlock);
+	spin_unlock(&fl->apps->hlock);
 	/*
 	 * Pass 2 for "kernel" arg to send kernel msg to DSP
 	 * with non-zero msg PID for the DSP to directly use
@@ -4192,9 +4251,9 @@ static int fastrpc_release_current_dsp_process(struct fastrpc_file *fl)
 	 */
 	VERIFY(err, 0 == (err = fastrpc_internal_invoke(fl,
 		FASTRPC_MODE_PARALLEL, KERNEL_MSG_WITH_NONZERO_PID, &ioctl)));
-	spin_lock(&fl->hlock);
+	spin_lock(&fl->apps->hlock);
 	fl->file_close = FASTRPC_PROCESS_DSP_EXIT_COMPLETE;
-	spin_unlock(&fl->hlock);
+	spin_unlock(&fl->apps->hlock);
 	if (err && fl->dsp_proc_init)
 		ADSPRPC_ERR(
 			"releasing DSP process failed with %d (0x%x) for %s\n",
@@ -4521,6 +4580,7 @@ static int fastrpc_mmap_remove_ssr(struct fastrpc_file *fl)
 		hlist_for_each_entry_safe(map, n, &me->maps, hn) {
 			match = map;
 			if (map->is_persistent) {
+				map->in_use = false;
 				match = NULL;
 				continue;
 			}
@@ -5132,12 +5192,11 @@ static int fastrpc_file_free(struct fastrpc_file *fl)
 	if (!fl)
 		return 0;
 	cid = fl->cid;
-	spin_lock(&fl->hlock);
+	spin_lock(&fl->apps->hlock);
 	fl->file_close = FASTRPC_PROCESS_EXIT_START;
-	spin_unlock(&fl->hlock);
+	spin_unlock(&fl->apps->hlock);
 
 	(void)fastrpc_release_current_dsp_process(fl);
-
 	spin_lock(&fl->apps->hlock);
 	if (!fl->is_ramdump_pend) {
 		spin_unlock(&fl->apps->hlock);
@@ -5150,10 +5209,10 @@ skip_dump_wait:
 	spin_lock(&fl->apps->hlock);
 	hlist_del_init(&fl->hn);
 	fl->is_ramdump_pend = false;
+	fl->in_process_create = false;
 	spin_unlock(&fl->apps->hlock);
 	kfree(fl->debug_buf);
 	kfree(fl->gidlist.gids);
-
 	if (!fl->sctx) {
 		kfree(fl->dev_pm_qos_req);
 		kfree(fl);
@@ -5237,8 +5296,8 @@ static ssize_t fastrpc_debugfs_read(struct file *filp, char __user *buffer,
 	unsigned int len = 0;
 	int i, j, sess_used = 0, ret = 0;
 	char *fileinfo = NULL;
-	char single_line[UL_SIZE] = "----------------";
-	char title[UL_SIZE] = "=========================";
+	char single_line[] = "----------------";
+	char title[] = "=========================";
 
 	fileinfo = kzalloc(DEBUGFS_SIZE, GFP_KERNEL);
 	if (!fileinfo) {
@@ -5291,6 +5350,7 @@ static ssize_t fastrpc_debugfs_read(struct file *filp, char __user *buffer,
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"%s%s%s%s%s\n", single_line, single_line,
 			single_line, single_line, single_line);
+		spin_lock(&me->hlock);
 		hlist_for_each_entry_safe(gmaps, n, &me->maps, hn) {
 			len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 				"%-20d|0x%-18llX|0x%-18X|0x%-20lX\n\n",
@@ -5298,18 +5358,21 @@ static ssize_t fastrpc_debugfs_read(struct file *filp, char __user *buffer,
 				(uint32_t)gmaps->size,
 				gmaps->va);
 		}
+		spin_unlock(&me->hlock);
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"%-20s|%-20s|%-20s|%-20s\n",
 			"len", "refs", "raddr", "flags");
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"%s%s%s%s%s\n", single_line, single_line,
 			single_line, single_line, single_line);
+		spin_lock(&me->hlock);
 		hlist_for_each_entry_safe(gmaps, n, &me->maps, hn) {
 			len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 				"0x%-18X|%-20d|%-20lu|%-20u\n",
 				(uint32_t)gmaps->len, gmaps->refs,
 				gmaps->raddr, gmaps->flags);
 		}
+		spin_unlock(&me->hlock);
 	} else {
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"\n%s %13s %d\n", "cid", ":", fl->cid);
@@ -5351,12 +5414,14 @@ static ssize_t fastrpc_debugfs_read(struct file *filp, char __user *buffer,
 			"%s%s%s%s%s\n",
 			single_line, single_line, single_line,
 			single_line, single_line);
+		mutex_lock(&fl->map_mutex);
 		hlist_for_each_entry_safe(map, n, &fl->maps, hn) {
 			len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 				"0x%-20lX|0x%-20llX|0x%-20zu\n\n",
 				map->va, map->phys,
 				map->size);
 		}
+		mutex_unlock(&fl->map_mutex);
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"%-20s|%-20s|%-20s|%-20s\n",
 			"len", "refs",
@@ -5365,24 +5430,27 @@ static ssize_t fastrpc_debugfs_read(struct file *filp, char __user *buffer,
 			"%s%s%s%s%s\n",
 			single_line, single_line, single_line,
 			single_line, single_line);
+		mutex_lock(&fl->map_mutex);
 		hlist_for_each_entry_safe(map, n, &fl->maps, hn) {
 			len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 				"%-20zu|%-20d|0x%-20lX|%-20d\n\n",
 				map->len, map->refs, map->raddr,
 				map->uncached);
 		}
+		mutex_unlock(&fl->map_mutex);
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"%-20s|%-20s\n", "secure", "attr");
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"%s%s%s%s%s\n",
 			single_line, single_line, single_line,
 			single_line, single_line);
+		mutex_lock(&fl->map_mutex);
 		hlist_for_each_entry_safe(map, n, &fl->maps, hn) {
 			len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 				"%-20d|0x%-20lX\n\n",
 				map->secure, map->attr);
 		}
-
+		mutex_unlock(&fl->map_mutex);
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
 			"\n======%s %s %s======\n", title,
 			" LIST OF BUFS ", title);
@@ -5558,6 +5626,7 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 	fl->qos_request = 0;
 	fl->dsp_proc_init = 0;
 	fl->is_ramdump_pend = false;
+	fl->in_process_create = false;
 	init_completion(&fl->work);
 	fl->file_close = FASTRPC_PROCESS_DEFAULT_STATE;
 	filp->private_data = fl;
