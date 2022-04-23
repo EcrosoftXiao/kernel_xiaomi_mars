@@ -148,10 +148,10 @@
 					/* Dimming Setting*/
 					39 01 00 00 00 00 03 F0 5A 5A
 					15 01 00 00 00 00 02 B0 0D                           /* Global para */
-					15 01 00 00 00 00 02 B4 10                           /* Dimming Speed Setting : 0x10 : 16Frames*/
+					15 01 00 00 00 00 02 B4 00                           /* Dimming Speed Setting : 0x00 : 0Frames*/
 					15 01 00 00 00 00 02 B0 0C                           /* Global para */
-					15 01 00 00 00 00 02 B4 10                           /* 0x10 : ELVSS DIM OFF */
-					15 01 00 00 00 00 02 53 10                           /* 0x10 Normal transition(60Hz) */
+					15 01 00 00 00 00 02 B4 00                           /* 0x00 : ELVSS DIM OFF */
+					15 01 00 00 00 00 02 53 00                           /* 0x00 Normal transition(60Hz) */
 					39 01 00 00 00 00 03 51 00 00                        /* Write Display Brightness */
 					15 01 00 00 00 00 02 F7 07
 					39 01 00 00 00 00 03 F0 A5 A5
