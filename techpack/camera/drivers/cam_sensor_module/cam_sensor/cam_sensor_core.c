@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #include <linux/module.h>
@@ -23,12 +24,13 @@ static int cam_sensor_update_req_mgr(
 	int rc = 0;
 	struct cam_req_mgr_add_request add_req;
 
-	memset(&add_req, 0, sizeof(add_req));
 	add_req.link_hdl = s_ctrl->bridge_intf.link_hdl;
 	add_req.req_id = csl_packet->header.request_id;
 	CAM_DBG(CAM_SENSOR, " Rxed Req Id: %llu",
 		csl_packet->header.request_id);
 	add_req.dev_hdl = s_ctrl->bridge_intf.device_hdl;
+	add_req.skip_before_applying = 0;
+	add_req.trigger_eof = false;
 	if (s_ctrl->bridge_intf.crm_cb &&
 		s_ctrl->bridge_intf.crm_cb->add_req) {
 		rc = s_ctrl->bridge_intf.crm_cb->add_req(&add_req);
@@ -283,6 +285,15 @@ static int32_t cam_sensor_i2c_pkt_parse(struct cam_sensor_ctrl_t *s_ctrl,
 			csl_packet->header.request_id);
 		break;
 	}
+#if IS_ENABLED(CONFIG_ISPV2_AL6021)
+	case CAM_SENSOR_PACKET_OPCODE_SENSOR_ISPV2_POWERUP: {
+		i2c_reg_settings = &i2c_data->init_settings;
+		i2c_reg_settings->request_id = 0;
+		i2c_reg_settings->is_settings_valid = 0;
+		rc = cam_sensor_power_up_extra(s_ctrl);
+		return rc;
+	}
+#endif
 	case CAM_SENSOR_PACKET_OPCODE_SENSOR_NOP: {
 		if ((s_ctrl->sensor_state == CAM_SENSOR_INIT) ||
 			(s_ctrl->sensor_state == CAM_SENSOR_ACQUIRE)) {
@@ -691,9 +702,8 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 	rc = camera_io_dev_read(
 		&(s_ctrl->io_master_info),
 		slave_info->sensor_id_reg_addr,
-		&chipid,
-		s_ctrl->sensor_probe_addr_type,
-		s_ctrl->sensor_probe_data_type);
+		&chipid, CAMERA_SENSOR_I2C_TYPE_WORD,
+		CAMERA_SENSOR_I2C_TYPE_WORD);
 
 	CAM_DBG(CAM_SENSOR, "read id: 0x%x expected id 0x%x:",
 		chipid, slave_info->sensor_id);
@@ -842,11 +852,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 
 		sensor_acq_dev.device_handle =
 			cam_create_device_hdl(&bridge_params);
-		if (sensor_acq_dev.device_handle <= 0) {
-			rc = -EFAULT;
-			CAM_ERR(CAM_SENSOR, "Can not create device handle");
-			goto release_mutex;
-		}
 		s_ctrl->bridge_intf.device_hdl = sensor_acq_dev.device_handle;
 		s_ctrl->bridge_intf.session_hdl = sensor_acq_dev.session_handle;
 
@@ -975,7 +980,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			}
 		}
 		s_ctrl->sensor_state = CAM_SENSOR_START;
-
 		if (s_ctrl->bridge_intf.crm_cb &&
 			s_ctrl->bridge_intf.crm_cb->notify_timer) {
 			timer.link_hdl = s_ctrl->bridge_intf.link_hdl;
@@ -1385,7 +1389,20 @@ int cam_sensor_apply_settings(struct cam_sensor_ctrl_t *s_ctrl,
 					CAM_ERR(CAM_SENSOR,
 						"Failed to apply settings: %d",
 						rc);
-					return rc;
+					//return rc;
+					/* xiaomi add to ignore the apply setting fail - begin */
+					usleep_range(1000, 1010);
+					rc = cam_sensor_i2c_modes_util(
+						&(s_ctrl->io_master_info),
+						i2c_list);
+					if (rc < 0) {
+						CAM_ERR(CAM_SENSOR,
+							"Failed to reapply settings: %d, skip",
+							rc);
+						rc = 0;
+						break;
+					}
+					/* xiaomi add to ignore the apply setting fail - end */
 				}
 			}
 			CAM_DBG(CAM_SENSOR, "applied req_id: %llu", req_id);
