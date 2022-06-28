@@ -2313,28 +2313,30 @@ static int afe_send_cal_block(u16 port_id, struct cal_block_data *cal_block)
 		result = -EINVAL;
 		goto done;
 	}
-	if (cal_block->cal_data.size <= 0) {
-		pr_debug("%s: AFE cal has invalid size!\n", __func__);
-		result = -EINVAL;
-		goto done;
-	}
+	if (cal_block->cal_data.size != 0) {
+	       payload_size = cal_block->cal_data.size;
+	       mem_hdr.data_payload_addr_lsw =
+	          lower_32_bits(cal_block->cal_data.paddr);
+	       mem_hdr.data_payload_addr_msw =
+                    msm_audio_populate_upper_32_bits(cal_block->cal_data.paddr);
+	       mem_hdr.mem_map_handle = cal_block->map_data.q6map_handle;
 
-	payload_size = cal_block->cal_data.size;
-	mem_hdr.data_payload_addr_lsw =
-		lower_32_bits(cal_block->cal_data.paddr);
-	mem_hdr.data_payload_addr_msw =
-		msm_audio_populate_upper_32_bits(cal_block->cal_data.paddr);
-	mem_hdr.mem_map_handle = cal_block->map_data.q6map_handle;
+	       pr_debug("%s: AFE cal sent for device port = 0x%x, cal size = %zd, cal addr = 0x%pK\n",
+			       __func__, port_id,
+			       cal_block->cal_data.size, &cal_block->cal_data.paddr);
 
-	pr_debug("%s: AFE cal sent for device port = 0x%x, cal size = %zd, cal addr = 0x%pK\n",
-		__func__, port_id,
-		cal_block->cal_data.size, &cal_block->cal_data.paddr);
-
-	result = q6afe_set_params(port_id, q6audio_get_port_index(port_id),
+	       result = q6afe_set_params(port_id, q6audio_get_port_index(port_id),
 				  &mem_hdr, NULL, payload_size);
-	if (result)
-		pr_err("%s: AFE cal for port 0x%x failed %d\n",
-		       __func__, port_id, result);
+	       if (result)
+                   pr_err("%s: AFE cal for port 0x%x failed %d\n",
+		              __func__, port_id, result);
+	}
+	else {
+                pr_debug("%s: AFE cal has invalid size!\n", __func__);
+                result = -EINVAL;
+                goto done;
+        }
+
 
 done:
 	return result;
@@ -3194,7 +3196,7 @@ int afe_send_cdc_dma_data_align(u16 port_id, u32 cdc_dma_data_align)
 {
 	struct afe_param_id_cdc_dma_data_align data_align;
 	struct param_hdr_v3 param_info;
-	uint16_t port_index = 0;
+	int port_index = 0;
 	int ret = -EINVAL;
 
 	memset(&data_align, 0, sizeof(data_align));
@@ -3386,7 +3388,7 @@ static int afe_port_topology_deregister(u16 port_id)
 	uint32_t build_major_version = 0;
 	uint32_t build_minor_version = 0;
 	uint32_t build_branch_version = 0;
-	uint32_t afe_api_version = 0;
+        int afe_api_version = 0;
 
 	ret = q6core_get_avcs_avs_build_version_info(&build_major_version,
 						     &build_minor_version,
@@ -5176,7 +5178,7 @@ EXPORT_SYMBOL(afe_set_island_mode_cfg);
  */
 int afe_get_power_mode_cfg(u16 port_id, u32 *enable_flag)
 {
-	uint16_t port_index;
+	int port_index;
 	int ret = 0;
 
 	if (enable_flag) {
@@ -5200,7 +5202,7 @@ EXPORT_SYMBOL(afe_get_power_mode_cfg);
  */
 int afe_set_power_mode_cfg(u16 port_id, u32 enable_flag)
 {
-	uint16_t port_index;
+	int port_index;
 	int  ret= 0;
 
 	port_index = afe_get_port_index(port_id);
@@ -5263,6 +5265,31 @@ int afe_port_send_logging_cfg(u16 port_id,
 	return ret;
 }
 EXPORT_SYMBOL(afe_port_send_logging_cfg);
+
+int afe_port_send_afe_limiter_param(u16 port_id,
+	struct afe_param_id_port_afe_limiter_disable_t *disable_limiter)
+{
+	struct param_hdr_v3 param_hdr;
+	int ret = -EINVAL;
+
+	pr_debug("%s: enter, port: 0x%x logging flag: %x\n", __func__, port_id,
+		disable_limiter->disable_afe_limiter);
+	memset(&param_hdr, 0, sizeof(param_hdr));
+
+	param_hdr.module_id = AFE_MODULE_LIMITER;
+	param_hdr.instance_id = INSTANCE_ID_0;
+	param_hdr.param_id = AFE_PARAM_ID_ENABLE;
+	param_hdr.param_size = sizeof(struct afe_param_id_port_afe_limiter_disable_t);
+
+	ret = q6afe_pack_and_set_param_in_band(port_id,
+		q6audio_get_port_index(port_id), param_hdr, (u8*)disable_limiter);
+	if (ret)
+		pr_err("%s: AFE port logging setting for port 0x%x failed %d\n",
+			__func__, port_id, ret);
+
+	return ret;
+}
+EXPORT_SYMBOL(afe_port_send_afe_limiter_param);
 
 int afe_port_send_usb_dev_param(u16 port_id, union afe_port_config *afe_config)
 {
@@ -10443,7 +10470,7 @@ int afe_set_lpass_clock_v2(u16 port_id, struct afe_clk_set *cfg)
 {
 	int index = 0;
 	int ret = 0;
-	u16 idx = 0;
+	int idx = 0;
 	uint32_t build_major_version = 0;
 	uint32_t build_minor_version = 0;
 	uint32_t build_branch_version = 0;
